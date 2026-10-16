@@ -1,26 +1,21 @@
-// Content-addressed storage for finished token images. Files are named by the
-// SHA-256 of their bytes, so repeated uploads of the same token are free and a
-// URL can never be guessed from a page or resource id.
-
-import { createHash, randomBytes } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
+import {
+  mimeForFile,
+  sha256Hex,
+  StoreFullError,
+  TOKEN_EXTENSIONS,
+  TOKEN_FILE_PATTERN,
+  type StoredToken,
+  type TokenFile,
+  type TokenMime,
+  type TokenStore,
+} from "../core/tokenStore.js";
 
-export type TokenMime = "image/png" | "image/webp";
-
-const EXTENSIONS: Record<TokenMime, string> = { "image/png": "png", "image/webp": "webp" };
-export const TOKEN_FILE_PATTERN = /^([a-f0-9]{64})\.(png|webp)$/;
-
-export class StoreFullError extends Error {}
-
-export interface StoredToken {
-  hash: string;
-  fileName: string;
-  bytes: number;
-  created: boolean;
-}
-
-export class TokenStore {
+/** Token images on the local disk, for self-hosting on a VPS or container. */
+export class FileTokenStore implements TokenStore {
   private usedBytes = 0;
 
   constructor(
@@ -42,9 +37,9 @@ export class TokenStore {
     this.usedBytes = used;
   }
 
-  async put(data: Buffer, mime: TokenMime): Promise<StoredToken> {
-    const hash = createHash("sha256").update(data).digest("hex");
-    const fileName = `${hash}.${EXTENSIONS[mime]}`;
+  async put(data: Uint8Array, mime: TokenMime): Promise<StoredToken> {
+    const hash = await sha256Hex(data);
+    const fileName = `${hash}.${TOKEN_EXTENSIONS[mime]}`;
     const target = path.join(this.dir, fileName);
     try {
       await fs.access(target);
@@ -60,15 +55,25 @@ export class TokenStore {
     return { hash, fileName, bytes: data.length, created: true };
   }
 
-  /** Absolute path for a public file name, or null if the name is not a token file. */
-  resolve(fileName: string): string | null {
-    return TOKEN_FILE_PATTERN.test(fileName) ? path.join(this.dir, fileName) : null;
+  async get(fileName: string): Promise<TokenFile | null> {
+    if (!TOKEN_FILE_PATTERN.test(fileName)) return null;
+    const file = path.join(this.dir, fileName);
+    try {
+      const { size } = await fs.stat(file);
+      return {
+        body: Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>,
+        size,
+        mime: mimeForFile(fileName),
+      };
+    } catch {
+      return null;
+    }
   }
 
   async remove(hash: string): Promise<boolean> {
     if (!/^[a-f0-9]{64}$/.test(hash)) return false;
     let removed = false;
-    for (const ext of Object.values(EXTENSIONS)) {
+    for (const ext of Object.values(TOKEN_EXTENSIONS)) {
       const file = path.join(this.dir, `${hash}.${ext}`);
       try {
         const { size } = await fs.stat(file);

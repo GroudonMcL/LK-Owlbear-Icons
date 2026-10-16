@@ -7,3 +7,6 @@ data/
 !.env.example
 coverage/
 test-results/
+.wrangler/
+.dev.vars
+e2e/output/

@@ -1,16 +1,16 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-import { createReadStream, promises as fs } from "node:fs";
-import type { IncomingMessage, ServerResponse } from "node:http";
+// The HTTP API as a Web-standard (Request) => Response function, so the same
+// code runs in Cloudflare Workers and, through a thin adapter, in Node.
+
 import type { HealthResponse, TokenUploadResponse } from "@lkti/shared";
 import type { Config } from "./config.js";
 import { badRequest, HttpError } from "./errors.js";
 import { readDimensions, sniffImageMime } from "./imageSniff.js";
 import type { PageService, ProjectRegistry } from "./services.js";
-import { StoreFullError, type TokenStore } from "./tokenStore.js";
+import { sha256Hex, StoreFullError, type TokenStore } from "./tokenStore.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
-export interface AppDeps {
+export interface HandlerDeps {
   config: Config;
   registry: ProjectRegistry;
   pages: PageService;
@@ -23,10 +23,6 @@ const IMAGE_ID_PATTERN = /^[a-f0-9]{16,64}$/;
 const MAX_QUERY_LENGTH = 200;
 const MAX_TOKEN_DIMENSION = 2048;
 const MIN_TOKEN_DIMENSION = 32;
-
-function digest(value: string): Buffer {
-  return createHash("sha256").update(value).digest();
-}
 
 class RateLimiter {
   private readonly windows = new Map<string, { start: number; count: number }>();
@@ -47,40 +43,56 @@ class RateLimiter {
   }
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": Buffer.byteLength(payload),
-    "Cache-Control": "no-store",
-    ...headers,
-  });
-  res.end(payload);
+/** Equal-length hex digests compared without an early exit. */
+function digestsEqual(a: string, b: string): boolean {
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  return diff === 0;
 }
 
-async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
-  const declared = Number(req.headers["content-length"]);
+function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers },
+  });
+}
+
+async function readBody(request: Request, maxBytes: number): Promise<Uint8Array> {
+  const declared = Number(request.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maxBytes) {
     throw new HttpError(413, "PAYLOAD_TOO_LARGE", "Token image is too large.");
   }
-  const chunks: Buffer[] = [];
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
   let total = 0;
-  for await (const chunk of req) {
-    total += (chunk as Buffer).length;
-    if (total > maxBytes) throw new HttpError(413, "PAYLOAD_TOO_LARGE", "Token image is too large.");
-    chunks.push(chunk as Buffer);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new HttpError(413, "PAYLOAD_TOO_LARGE", "Token image is too large.");
+    }
+    chunks.push(value);
   }
-  return Buffer.concat(chunks);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
 }
 
-export function createApp(deps: AppDeps) {
+export function createHandler(deps: HandlerDeps): (request: Request) => Promise<Response> {
   const { config, registry, pages, tokens } = deps;
   const log = deps.log ?? ((m: string) => console.log(m));
-  const tokenDigests = config.accessTokens.map(digest);
+  const tokenDigests = Promise.all(config.accessTokens.map((t) => sha256Hex(t)));
   const limiter = new RateLimiter(config.rateLimitPerMinute);
 
-  function corsHeaders(req: IncomingMessage): Record<string, string> {
-    const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+  function corsHeaders(request: Request): Record<string, string> {
+    const origin = request.headers.get("origin") ?? "";
     const headers: Record<string, string> = {
       "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Authorization, Content-Type",
@@ -94,68 +106,62 @@ export function createApp(deps: AppDeps) {
   }
 
   /** Returns a rate-limit key for a valid token; throws otherwise. */
-  function authenticate(req: IncomingMessage): string {
-    const header = req.headers.authorization ?? "";
-    const match = /^Bearer\s+(.+)$/i.exec(header);
+  async function authenticate(request: Request): Promise<string> {
+    const match = /^Bearer\s+(.+)$/i.exec(request.headers.get("authorization") ?? "");
     if (!match) throw new HttpError(401, "UNAUTHORIZED", "Missing access token. Add it in the extension settings.");
-    const candidate = digest(match[1].trim());
-    const index = tokenDigests.findIndex((d) => timingSafeEqual(d, candidate));
+    const candidate = await sha256Hex(match[1].trim());
+    const index = (await tokenDigests).findIndex((d) => digestsEqual(d, candidate));
     if (index < 0) throw new HttpError(401, "UNAUTHORIZED", "The access token was not accepted by the server.");
     return `t${index}`;
   }
 
-  function tokenUrl(req: IncomingMessage, fileName: string): string {
-    if (config.publicBaseUrl) return `${config.publicBaseUrl}/t/${fileName}`;
-    const proto = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim() || "http";
-    const host = (req.headers["x-forwarded-host"] as string | undefined) || req.headers.host || "localhost";
-    return `${proto}://${host}/t/${fileName}`;
+  function tokenUrl(request: Request, fileName: string): string {
+    const base = config.publicBaseUrl ?? new URL(request.url).origin;
+    return `${base}/t/${fileName}`;
   }
 
-  async function serveToken(req: IncomingMessage, res: ServerResponse, fileName: string): Promise<void> {
-    const file = tokens?.resolve(fileName);
+  async function serveToken(request: Request, fileName: string): Promise<Response> {
     const common = {
       "Access-Control-Allow-Origin": "*",
       "Cross-Origin-Resource-Policy": "cross-origin",
       "X-Content-Type-Options": "nosniff",
     };
-    if (!file) return sendJson(res, 404, new HttpError(404, "NOT_FOUND", "Not found").toBody(), common);
-    let size: number;
-    try {
-      size = (await fs.stat(file)).size;
-    } catch {
-      return sendJson(res, 404, new HttpError(404, "NOT_FOUND", "Not found").toBody(), common);
-    }
-    res.writeHead(200, {
-      ...common,
-      "Content-Type": fileName.endsWith(".webp") ? "image/webp" : "image/png",
-      "Content-Length": size,
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "Content-Security-Policy": "default-src 'none'",
+    const file = tokens ? await tokens.get(fileName) : null;
+    if (!file) return json(404, new HttpError(404, "NOT_FOUND", "Not found").toBody(), common);
+    return new Response(request.method === "HEAD" ? null : file.body, {
+      status: 200,
+      headers: {
+        ...common,
+        "Content-Type": file.mime,
+        "Content-Length": String(file.size),
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Security-Policy": "default-src 'none'",
+      },
     });
-    if (req.method === "HEAD") return void res.end();
-    createReadStream(file).pipe(res);
   }
 
-  async function route(req: IncomingMessage, res: ServerResponse, cors: Record<string, string>): Promise<void> {
-    const url = new URL(req.url ?? "/", "http://internal");
-    const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-    const method = req.method ?? "GET";
+  async function route(request: Request, cors: Record<string, string>): Promise<Response> {
+    const url = new URL(request.url);
+    let parts: string[];
+    try {
+      parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    } catch {
+      throw badRequest("Malformed path.");
+    }
+    const method = request.method;
 
     // Public, unauthenticated routes.
     if (parts[0] === "t" && parts.length === 2 && (method === "GET" || method === "HEAD")) {
-      return serveToken(req, res, parts[1]);
+      return serveToken(request, parts[1]);
     }
     if (parts[0] !== "api") throw new HttpError(404, "NOT_FOUND", "Not found");
-    if (method === "OPTIONS") {
-      res.writeHead(204, cors);
-      return void res.end();
-    }
+    if (method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     if (parts[1] === "health" && parts.length === 2 && method === "GET") {
       const body: HealthResponse = { ok: true, version: VERSION, tokenHosting: tokens !== null };
-      return sendJson(res, 200, body, cors);
+      return json(200, body, cors);
     }
 
-    const rateKey = authenticate(req);
+    const rateKey = await authenticate(request);
     const wait = limiter.check(rateKey);
     if (wait !== null) {
       throw new HttpError(429, "RATE_LIMITED", "Too many requests. Slow down a little.", { retryable: true, retryAfter: wait });
@@ -163,7 +169,7 @@ export function createApp(deps: AppDeps) {
 
     // GET /api/projects
     if (parts[1] === "projects" && parts.length === 2 && method === "GET") {
-      return sendJson(res, 200, await registry.list(url.searchParams.get("refresh") === "1"), cors);
+      return json(200, await registry.list(url.searchParams.get("refresh") === "1"), cors);
     }
 
     if (parts[1] === "projects" && parts.length >= 4) {
@@ -175,8 +181,8 @@ export function createApp(deps: AppDeps) {
         const q = (url.searchParams.get("q") ?? "").trim();
         if (q.length > MAX_QUERY_LENGTH) throw badRequest("Search text is too long.");
         const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 25));
-        if (!q) return sendJson(res, 200, { query: "", results: [], limited: false }, cors);
-        return sendJson(res, 200, await pages.search(projectId, q, limit), cors);
+        if (!q) return json(200, { query: "", results: [], limited: false }, cors);
+        return json(200, await pages.search(projectId, q, limit), cors);
       }
 
       if (parts[3] === "pages" && parts.length >= 5) {
@@ -186,7 +192,7 @@ export function createApp(deps: AppDeps) {
         // GET /api/projects/:projectId/pages/:resourceId
         if (parts.length === 5 && method === "GET") {
           const page = await pages.getPage(projectId, resourceId, url.searchParams.get("fresh") === "1");
-          return sendJson(res, 200, page.details, cors);
+          return json(200, page.details, cors);
         }
 
         // GET /api/projects/:projectId/pages/:resourceId/images/:imageId
@@ -194,15 +200,17 @@ export function createApp(deps: AppDeps) {
           const imageId = parts[6];
           if (!IMAGE_ID_PATTERN.test(imageId)) throw badRequest("Invalid image id.");
           const image = await pages.getImage(projectId, resourceId, imageId);
-          res.writeHead(200, {
-            ...cors,
-            "Content-Type": image.mime,
-            "Content-Length": image.body.length,
-            "Cache-Control": "private, max-age=600",
-            "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "default-src 'none'",
+          return new Response(image.body, {
+            status: 200,
+            headers: {
+              ...cors,
+              "Content-Type": image.mime,
+              "Content-Length": String(image.body.byteLength),
+              "Cache-Control": "private, max-age=600",
+              "X-Content-Type-Options": "nosniff",
+              "Content-Security-Policy": "default-src 'none'",
+            },
           });
-          return void res.end(image.body);
         }
       }
     }
@@ -212,7 +220,7 @@ export function createApp(deps: AppDeps) {
 
       // POST /api/tokens  (body: PNG or WebP bytes)
       if (parts.length === 2 && method === "POST") {
-        const body = await readBody(req, config.maxTokenUploadBytes);
+        const body = await readBody(request, config.maxTokenUploadBytes);
         const mime = sniffImageMime(body);
         if (mime !== "image/png" && mime !== "image/webp") {
           throw new HttpError(415, "UNSUPPORTED_IMAGE", "Token images must be PNG or WebP.");
@@ -233,7 +241,7 @@ export function createApp(deps: AppDeps) {
           throw err;
         }
         const response: TokenUploadResponse = {
-          url: tokenUrl(req, stored.fileName),
+          url: tokenUrl(request, stored.fileName),
           hash: stored.hash,
           width: dims.width,
           height: dims.height,
@@ -241,37 +249,35 @@ export function createApp(deps: AppDeps) {
           bytes: stored.bytes,
           created: stored.created,
         };
-        return sendJson(res, stored.created ? 201 : 200, response, cors);
+        return json(stored.created ? 201 : 200, response, cors);
       }
 
       // DELETE /api/tokens/:hash  (cleanup after a failed placement)
       if (parts.length === 3 && method === "DELETE") {
         if (!/^[a-f0-9]{64}$/.test(parts[2])) throw badRequest("Invalid token id.");
         await tokens.remove(parts[2]);
-        res.writeHead(204, cors);
-        return void res.end();
+        return new Response(null, { status: 204, headers: cors });
       }
     }
 
     throw new HttpError(404, "NOT_FOUND", "Not found");
   }
 
-  return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const cors = corsHeaders(req);
+  return async function handle(request: Request): Promise<Response> {
+    const cors = corsHeaders(request);
     const started = Date.now();
+    let response: Response;
     try {
-      await route(req, res, cors);
+      response = await route(request, cors);
     } catch (err) {
-      const error =
-        err instanceof HttpError ? err : new HttpError(500, "INTERNAL", "Unexpected server error.");
-      if (!(err instanceof HttpError)) log(`[error] ${req.method} ${req.url?.split("?")[0]}: ${(err as Error)?.stack ?? err}`);
-      if (res.headersSent) return void res.destroy();
+      const error = err instanceof HttpError ? err : new HttpError(500, "INTERNAL", "Unexpected server error.");
+      if (!(err instanceof HttpError)) log(`[error] ${request.method} ${new URL(request.url).pathname}: ${(err as Error)?.stack ?? err}`);
       const headers: Record<string, string> = { ...cors };
       if (error.options.retryAfter !== undefined) headers["Retry-After"] = String(error.options.retryAfter);
-      sendJson(res, error.status, error.toBody(), headers);
-    } finally {
-      // Paths only: queries may contain campaign search text.
-      log(`${req.method} ${req.url?.split("?")[0]} ${res.statusCode} ${Date.now() - started}ms`);
+      response = json(error.status, error.toBody(), headers);
     }
+    // Paths only: queries may contain campaign search text.
+    log(`${request.method} ${new URL(request.url).pathname} ${response.status} ${Date.now() - started}ms`);
+    return response;
   };
 }

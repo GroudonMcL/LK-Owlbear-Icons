@@ -1,0 +1,9 @@
+# Workers Static Assets / Netlify / Cloudflare Pages header rules.
+# Owlbear Rodeo fetches the manifest (and icons) from its own origin.
+/manifest.json
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-cache
+/icon.svg
+  Access-Control-Allow-Origin: *
+/icons/*
+  Access-Control-Allow-Origin: *

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { LkApiError, LkClient, LkNetworkError } from "../src/lk/client.js";
+import { LkApiError, LkClient, LkNetworkError } from "../src/core/lk/client.js";
 
 function respond(status: number, body: unknown, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -14,7 +14,7 @@ describe("LkClient", () => {
     const fetchMock = vi.fn(async () => respond(200, { data: [] }));
     await client(fetchMock as unknown as typeof fetch).get("/api/v3/projects/p/search", { q: "gob lin", limit: 5, skip: undefined });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
-    expect(url.toString()).toBe("https://lk.test/api/v3/projects/p/search?q=gob+lin&limit=5");
+    expect(url.toString()).toBe("https://lk.test/api/v3/projects/p/search/?q=gob+lin&limit=5");
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer secret");
   });
 
@@ -54,5 +54,22 @@ describe("LkClient", () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
     await expect(client(fetchMock).get("/x")).rejects.toBeInstanceOf(LkNetworkError);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("LkClient in Workers", () => {
+  it("never calls the global fetch with the client as `this` (Workers throws Illegal invocation)", async () => {
+    const original = globalThis.fetch;
+    const strictFetch = function (this: unknown) {
+      if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+      return Promise.resolve(respond(200, { ok: true }));
+    } as unknown as typeof fetch;
+    globalThis.fetch = strictFetch;
+    try {
+      const c = new LkClient({ baseUrl: "https://lk.test", apiKey: "k", sleep: async () => {} });
+      await expect(c.get("/x")).resolves.toEqual({ ok: true });
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });

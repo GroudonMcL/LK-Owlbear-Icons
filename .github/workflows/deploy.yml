@@ -1,0 +1,79 @@
+name: Deploy to Cloudflare
+
+# Run from the Actions tab ("Run workflow"), or automatically on pushes to main.
+# Needs four repository secrets; see README → Deploy.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+      - name: Check LegendKeeper secrets
+        env:
+          LK_API_KEYS: ${{ secrets.LK_API_KEYS }}
+          LKTI_ACCESS_TOKENS: ${{ secrets.LKTI_ACCESS_TOKENS }}
+        run: node deploy/secrets.mjs "$RUNNER_TEMP/worker-secrets.json"
+
+      - name: Prepare Cloudflare (subdomain check, token storage)
+        id: prepare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node deploy/prepare.mjs
+
+      - run: npm run build:cloudflare
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
+
+      - name: Store LegendKeeper secrets in the Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler secret bulk "$RUNNER_TEMP/worker-secrets.json"
+          rm -f "$RUNNER_TEMP/worker-secrets.json"
+
+      - name: Check the deployment
+        run: |
+          base="https://lk-token-importer.${{ steps.prepare.outputs.subdomain }}.workers.dev"
+          for i in $(seq 1 20); do
+            if curl -fsS "$base/api/health" > /dev/null && curl -fsS "$base/manifest.json" > /dev/null; then break; fi
+            sleep 3
+          done
+          curl -fsS "$base/api/health"
+          {
+            echo "## Deployed"
+            echo ""
+            echo "In Owlbear Rodeo, open your profile, click **Add Extension** and paste:"
+            echo ""
+            echo '```'
+            echo "$base/manifest.json"
+            echo '```'
+            echo ""
+            echo "Enable it for a room, open it from the room's top-left toolbar and enter your LKTI_ACCESS_TOKENS value."
+          } >> "$GITHUB_STEP_SUMMARY"

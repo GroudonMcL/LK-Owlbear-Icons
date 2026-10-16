@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build:cloudflare
+      - name: Bundle the Worker (no upload)
+        run: npx wrangler deploy --dry-run
+
+  e2e:
+    # Production bundle + real Owlbear SDK, served by the Workers runtime (workerd),
+    # inside an Owlbear host emulator, against a spec-validated mock LegendKeeper.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright-core install --with-deps chromium
+      - run: npm run build:cloudflare
+      - run: npm run e2e
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: e2e/output
+          if-no-files-found: ignore

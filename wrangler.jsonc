@@ -1,0 +1,20 @@
+// Cloudflare Worker: serves the extension (static assets), its API (/api) and
+// hosted tokens (/t). Deployed by .github/workflows/deploy.yml; see README.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lk-token-importer",
+  "main": "server/src/worker.ts",
+  "compatibility_date": "2025-09-01",
+  "assets": {
+    "directory": "extension/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "none",
+    // Serve /editor.html as-is (Owlbear opens the exact URLs the extension asks for).
+    "html_handling": "none"
+  },
+  "kv_namespaces": [
+    // The deploy workflow finds or creates the namespace and fills in its id.
+    { "binding": "TOKENS", "id": "00000000000000000000000000000000" }
+  ],
+  "observability": { "enabled": true }
+}

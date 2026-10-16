@@ -37,7 +37,9 @@ export class LkClient {
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(private readonly options: LkClientOptions) {
-    this.fetchImpl = options.fetch ?? fetch;
+    // Never call the global fetch as a method: Workers throws "Illegal invocation"
+    // when its `this` is anything but the global scope.
+    this.fetchImpl = options.fetch ?? ((input, init) => fetch(input, init));
     this.timeoutMs = options.timeoutMs ?? 15_000;
     this.maxRetries = options.maxRetries ?? 2;
     this.maxRetryWaitSeconds = options.maxRetryWaitSeconds ?? 5;
@@ -45,7 +47,9 @@ export class LkClient {
   }
 
   async get<T>(path: string, query: Record<string, string | number | undefined> = {}): Promise<T> {
-    const url = new URL(this.options.baseUrl + path);
+    // LegendKeeper's canonical routes end in "/" (others answer 308), so ask for
+    // them directly rather than relying on how a runtime treats auth on redirects.
+    const url = new URL(this.options.baseUrl + (path.endsWith("/") ? path : `${path}/`));
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
@@ -53,8 +57,6 @@ export class LkClient {
     for (let attempt = 0; ; attempt++) {
       let response: Response;
       try {
-        // Same-origin redirects (the API 308s to trailing-slash paths) keep the
-        // Authorization header; fetch strips it on cross-origin redirects.
         response = await this.fetchImpl(url, {
           headers: { Authorization: `Bearer ${this.options.apiKey}`, Accept: "application/json" },
           signal: AbortSignal.timeout(this.timeoutMs),
@@ -65,7 +67,10 @@ export class LkClient {
           await this.sleep(backoff(attempt));
           continue;
         }
-        throw new LkNetworkError(`LegendKeeper is unreachable: ${(err as Error).message}`);
+        const cause = (err as Error & { cause?: unknown }).cause;
+        const detail = `${(err as Error).message}${cause ? ` (${String((cause as Error).message ?? cause)})` : ""}`;
+        console.warn(`[legendkeeper] ${url.pathname} unreachable after ${attempt + 1} attempts: ${detail}`);
+        throw new LkNetworkError(`LegendKeeper is unreachable: ${detail}`);
       }
 
       if (response.ok) return (await response.json()) as T;

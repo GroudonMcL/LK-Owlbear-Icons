@@ -1,14 +1,20 @@
+// Optional self-hosted entry (VPS, container). The recommended deployment is
+// the Cloudflare Worker in ../worker.ts, which needs nothing installed.
+
 import http from "node:http";
-import { createApp, VERSION } from "./app.js";
-import { ConfigError, loadConfig } from "./config.js";
-import { LkClient } from "./lk/client.js";
-import { PageService, ProjectRegistry } from "./services.js";
-import { TokenStore } from "./tokenStore.js";
+import path from "node:path";
+import { ConfigError, loadConfig } from "../core/config.js";
+import { createHandler, VERSION } from "../core/handler.js";
+import { LkClient } from "../core/lk/client.js";
+import { PageService, ProjectRegistry } from "../core/services.js";
+import { toNodeListener } from "./adapter.js";
+import { FileTokenStore } from "./fileTokenStore.js";
+import { safeFetch } from "./safeFetch.js";
 
 async function main(): Promise<void> {
   let config;
   try {
-    config = loadConfig();
+    config = loadConfig(process.env);
   } catch (err) {
     if (err instanceof ConfigError) {
       console.error(`Configuration error: ${err.message}`);
@@ -23,11 +29,12 @@ async function main(): Promise<void> {
     maxSourceImageBytes: config.maxSourceImageBytes,
     assetHostAllowlist: config.assetHostAllowlist,
     allowInsecureAssetFetch: config.allowInsecureAssetFetch,
+    fetchImage: safeFetch,
   });
 
-  let tokens: TokenStore | null = null;
-  if (config.tokenStoreDir) {
-    tokens = new TokenStore(config.tokenStoreDir, config.tokenStoreMaxBytes);
+  let tokens: FileTokenStore | null = null;
+  if (config.tokenHosting) {
+    tokens = new FileTokenStore(path.resolve(config.tokenStoreDir), config.tokenStoreMaxBytes);
     await tokens.init();
   }
 
@@ -41,7 +48,7 @@ async function main(): Promise<void> {
     console.warn("LKTI_INSECURE_ASSET_FETCH=1: private-address protection is OFF. Use only for local testing.");
   }
 
-  const server = http.createServer(createApp({ config, registry, pages, tokens }));
+  const server = http.createServer(toNodeListener(createHandler({ config, registry, pages, tokens })));
   server.requestTimeout = 60_000;
   server.listen(config.port, config.host, () => {
     console.log(`LegendKeeper Token Importer backend ${VERSION} on http://${config.host}:${config.port}`);

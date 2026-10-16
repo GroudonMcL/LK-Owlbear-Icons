@@ -1,5 +1,3 @@
-import path from "node:path";
-
 export interface Config {
   host: string;
   port: number;
@@ -12,8 +10,10 @@ export interface Config {
   allowedOrigins: string[] | "*";
   /** Public URL of this server, used to build token image URLs. */
   publicBaseUrl: string | null;
-  /** Directory for hosted token images, or null when token hosting is off. */
-  tokenStoreDir: string | null;
+  /** Whether finished tokens may be hosted by this server (needs a store). */
+  tokenHosting: boolean;
+  /** Node only: directory for hosted token images. */
+  tokenStoreDir: string;
   tokenStoreMaxBytes: number;
   maxTokenUploadBytes: number;
   maxSourceImageBytes: number;
@@ -43,7 +43,9 @@ function positiveNumber(value: string | undefined, fallback: number, name: strin
   return n;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+export type Env = Record<string, string | undefined>;
+
+export function loadConfig(env: Env): Config {
   const accessTokens = list(env.LKTI_ACCESS_TOKENS);
   if (accessTokens.length === 0) {
     throw new ConfigError("LKTI_ACCESS_TOKENS is required (comma-separated, each at least 24 characters)");
@@ -62,7 +64,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const hosting = (env.LKTI_TOKEN_HOSTING ?? "on").toLowerCase();
   if (!["on", "off"].includes(hosting)) throw new ConfigError("LKTI_TOKEN_HOSTING must be on or off");
-  const tokenStoreDir = hosting === "off" ? null : path.resolve(env.LKTI_TOKEN_DIR || "./data/tokens");
 
   const assetHosts = list(env.LK_ASSET_HOSTS).map((h) => h.toLowerCase().replace(/^\*?\./, ""));
 
@@ -79,7 +80,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     lkBaseUrl,
     allowedOrigins,
     publicBaseUrl,
-    tokenStoreDir,
+    tokenHosting: hosting === "on",
+    tokenStoreDir: env.LKTI_TOKEN_DIR || "./data/tokens",
     tokenStoreMaxBytes: positiveNumber(env.LKTI_TOKEN_STORE_MAX_MB, 1024, "LKTI_TOKEN_STORE_MAX_MB") * 1024 * 1024,
     maxTokenUploadBytes: 6 * 1024 * 1024,
     maxSourceImageBytes:

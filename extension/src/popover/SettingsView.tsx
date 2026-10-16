@@ -3,7 +3,7 @@ import { ArrowLeft, Check, Eye, EyeOff, PlugZap, ShieldCheck, Trash2 } from "luc
 import { useEffect, useState } from "react";
 import { ApiClient, describeError } from "../lib/api";
 import { LINK_KEY } from "../lib/links";
-import { isConfigured, saveSettings, useSettings, type Settings } from "../lib/settings";
+import { isConfigured, SAME_ORIGIN_BACKEND, saveSettings, useSettings, type Settings } from "../lib/settings";
 import type { Platform } from "../platform/types";
 import { Banner, Button, Field, IconButton, Segmented } from "../ui/components";
 import { useSceneLinks } from "./useSceneLinks";
@@ -85,22 +85,36 @@ export function SettingsView({ platform, onDone }: { platform: Platform; onDone:
       <div className="scroll stack" style={{ flex: 1, minHeight: 0, paddingBottom: 6 }}>
         <section className="card stack">
           <div className="eyebrow">LegendKeeper connection</div>
-          <Field
-            label="Importer server URL"
-            htmlFor="backend-url"
-            hint="The backend that holds your LegendKeeper API key. The key never reaches this browser."
-          >
-            <input
-              id="backend-url"
-              className="input"
-              placeholder="https://lk-importer.example.com"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              spellCheck={false}
-              autoComplete="url"
-            />
-          </Field>
-          <Field label="Access token" htmlFor="access-token" hint="One of the server's LKTI_ACCESS_TOKENS. Stored only in this browser.">
+          {(() => {
+            const urlField = (
+              <Field
+                label="Importer server URL"
+                htmlFor="backend-url"
+                hint="The service that holds your LegendKeeper API key. The key never reaches this browser."
+              >
+                <input
+                  id="backend-url"
+                  className="input"
+                  placeholder="https://lk-token-importer.example.workers.dev"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  spellCheck={false}
+                  autoComplete="url"
+                />
+              </Field>
+            );
+            if (!SAME_ORIGIN_BACKEND) return urlField;
+            // The deployed extension talks to its own host; the URL only matters for unusual setups.
+            return (
+              <details className="small">
+                <summary className="faint" style={{ cursor: "pointer" }}>
+                  Server: this extension's host. Change…
+                </summary>
+                <div style={{ paddingTop: 8 }}>{urlField}</div>
+              </details>
+            );
+          })()}
+          <Field label="Access token" htmlFor="access-token" hint="The access password you chose when deploying (the LKTI_ACCESS_TOKENS secret). Stored only in this browser.">
             <div className="row">
               <input
                 id="access-token"

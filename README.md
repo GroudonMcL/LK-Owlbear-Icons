@@ -2,147 +2,160 @@
 
 An [Owlbear Rodeo](https://www.owlbear.rodeo) extension that turns art from a
 [LegendKeeper](https://www.legendkeeper.com) page into a framed, ready-to-play token.
-The GM searches a page, picks an image, crops and frames it, and the token lands in the
-scene with the page's title, its creature size, and a persistent link back to the page.
+Search a page, pick an image, crop and frame it, and the token lands in the scene with
+the page's title, its creature size and a persistent link back to the page.
 
-- **Search & images.** Search the project, open a page, and see every image on it:
-  sidebar images, image blocks (including those inside infoboxes, layouts, tables and
-  secrets), the page image and the banner.
-- **Linking without duplicates.** Each token stores the page's id. Opening a page that
-  already has a token offers *Use existing*, *Create another* or *Cancel*. Copies,
-  renamed pages, deleted tokens, tokens in other scenes and broken link data are all
-  handled. A failed lookup is never treated as "no token".
-- **Token editor.** A large live preview with drag, wheel or pinch zoom around the cursor,
-  rotation, flip, fit/fill/reset, and a dimmed view of the art outside the frame. There
-  are five shapes (circle, rounded, square, two hex orientations) and nine procedural
-  frames (gilded, silver, engraved, iron-bound, arcane, infernal, double line, minimal,
-  none) with colour, thickness, spacing, backing and opacity. You can also adjust
-  brightness, contrast and saturation, and remove a flat background. The export *is* the
-  preview: both come from one renderer.
-- **Automatic size.** A `Size` key/value field, a `Size: Large` line, or a statblock line
-  such as `Large dragon, chaotic evil` sets the grid footprint: Tiny ½, Small/Medium 1,
-  Large 2, Huge 3, Gargantuan 4 (configurable). You can always override it.
+**Nothing runs on your computer.** The extension and its small companion service are
+deployed together as one free Cloudflare Worker, straight from GitHub. You add one URL to
+Owlbear Rodeo and type one password.
 
-Read [docs/API-RESEARCH.md](docs/API-RESEARCH.md) for what was verified about both APIs,
-and the limitations that shaped this design.
+## What it does
+
+- **Search & images.** Search your LegendKeeper project, open a page, and see every image
+  on it: sidebar images and image blocks (including those inside infoboxes, layouts,
+  tables and secrets), plus the page image and the banner.
+- **Linked tokens, no accidental duplicates.** Each token remembers its page by id.
+  Opening a page that already has a token offers **Use existing**, **Create another** or
+  **Cancel**. Copies, renamed pages, deleted tokens, tokens in other scenes, broken link
+  data and failed lookups are all handled explicitly.
+- **Token editor.** A large live preview with drag, wheel or pinch zoom around the
+  cursor, rotation, flip, fit/fill/reset, and a dimmed view of the art outside the frame.
+  There are five shapes and nine procedural frames with colour, thickness, spacing,
+  backing and opacity, plus brightness/contrast/saturation and flat-background removal.
+  The export comes from the same renderer as the preview.
+- **Automatic size.** A `Size` field, a `Size: Large` line, or a statblock line such as
+  `Large dragon, chaotic evil` sets the footprint: Tiny ½, Small/Medium 1, Large 2,
+  Huge 3, Gargantuan 4 (configurable). You can always override it.
+- **Placement.** Drop at the centre of your view, or click to place with a live preview.
+  Right-click a linked token → **LegendKeeper page** to jump back to its page.
+
+## Set it up (about 10 minutes, all in the browser)
+
+You need a LegendKeeper project on a **paid plan** (API keys require it), a free
+[Cloudflare](https://dash.cloudflare.com/sign-up) account, and this repository on GitHub.
+
+1. **LegendKeeper key.** In your project: *Project Settings → Developers → API Keys →*
+   create a key (the *Member* role is enough). Copy it.
+2. **Cloudflare.**
+   - Open *Workers & Pages* once. Cloudflare asks you to choose a `workers.dev`
+     subdomain the first time.
+   - Copy your **Account ID** (shown on the *Workers & Pages* overview, or in the URL of
+     the dashboard).
+   - *My Profile → API Tokens → Create Token →* use the **Edit Cloudflare Workers**
+     template, then copy the token.
+3. **Choose an access password** for the extension: at least 24 characters, from a
+   password manager.
+4. **GitHub secrets.** In this repository: *Settings → Secrets and variables → Actions →
+   New repository secret*. Add:
+
+   | Name | Value |
+   | --- | --- |
+   | `CLOUDFLARE_API_TOKEN` | the Cloudflare API token |
+   | `CLOUDFLARE_ACCOUNT_ID` | your Cloudflare account ID |
+   | `LK_API_KEYS` | the LegendKeeper API key (comma-separate several, one per project) |
+   | `LKTI_ACCESS_TOKENS` | your access password |
+
+5. **Deploy.** *Actions → Deploy to Cloudflare → Run workflow.* When it finishes, its
+   summary shows your extension URL, e.g.
+   `https://lk-token-importer.<your-subdomain>.workers.dev/manifest.json`.
+6. **Owlbear Rodeo.** Open your [profile](https://owlbear.app/profile), click **Add
+   Extension** and paste that URL. Enable the extension for a room, open it from the
+   room's top-left toolbar, and enter your access password. Your project is selected
+   automatically.
+
+To update later, run the workflow again (it also runs on every push to `main`). Hosted
+tokens are kept across deploys.
+
+### Costs and limits
+
+The Cloudflare free plan covers normal use: 100,000 requests per day. Finished tokens
+are stored in Workers KV (1 GB and 1,000 new tokens per day on the free plan) and served
+from Cloudflare's cache. LegendKeeper allows 300 API requests per minute per key. A page
+open uses 1–9 of them, depending on how many documents the page has.
 
 ## How it fits together
 
 ```
- Owlbear Rodeo (GM's browser)                 Your server                    LegendKeeper
-┌─────────────────────────────┐   access    ┌──────────────────────┐ API key ┌──────────────┐
-│ popover: search, page,      │── token ──▶ │ /api/projects        │───────▶ │ /api/v3/...  │
-│   link status, image picker │             │ /api/.../search      │         │              │
-│ modal: token editor         │             │ /api/.../pages/:id   │         │ asset host   │
-│ background: context menu,   │ ◀─ blob ─── │ /api/.../images/:id  │───────▶ │ (images)     │
-│   click-to-place, index     │             │ POST /api/tokens     │         └──────────────┘
-└─────────────────────────────┘             │ GET  /t/<sha256>.png │ ◀── every player's
-                                            └──────────────────────┘     browser (CORS *)
+ Owlbear Rodeo (GM's browser)                 Cloudflare Worker (one URL)           LegendKeeper
+┌─────────────────────────────┐            ┌───────────────────────────────┐ API key ┌─────────────┐
+│ popover: search, page,      │  access    │ /*.html, /assets  extension   │───────▶ │ /api/v3/... │
+│   link status, image picker │─ password ▶│ /api/...          API         │         │             │
+│ modal: token editor         │            │ /api/.../images   image proxy │───────▶ │ asset host  │
+│ background: context menu,   │ ◀─ blob ── │ POST /api/tokens  store token │         └─────────────┘
+│   click-to-place, index     │            │ GET /t/<sha256>   public, CORS│ ◀── every player's
+└─────────────────────────────┘            └──────────────┬────────────────┘     browser
+                                                          └── Workers KV (finished tokens)
 ```
 
-- **`server/`** is a zero-dependency Node service and the only place LegendKeeper keys
-  live. LegendKeeper's API refuses browser origins, so a server is required anyway.
-- **`extension/`** is a Vite + React app with three pages: the popover, the editor modal
-  and a background page.
+LegendKeeper's API refuses requests from browser pages, and its keys must stay secret,
+so a server-side piece is unavoidable. The Worker is that piece, and it also hosts the
+extension. Code layout:
+
+- **`extension/`** is the Owlbear extension (Vite + React): popover, editor modal and
+  background page.
+- **`server/src/core/`** is the runtime-agnostic API: Web `Request` → `Response`, Web
+  Crypto and `fetch`.
+- **`server/src/worker.ts`** is the Cloudflare entry, with the KV token store.
+  **`server/src/node/`** is an optional self-hosting entry with a DNS-pinned fetcher and
+  a file store (see `server/Dockerfile`).
 - **`shared/`** holds the wire types and the size-detection rules.
+- **`deploy/`** holds the GitHub Actions helpers, and **`e2e/`** the Owlbear host
+  emulator and end-to-end run.
 
-## Running it
+## Security
 
-### 1. Server
-
-```sh
-npm install
-cp server/.env.example server/.env    # fill in LKTI_ACCESS_TOKENS and LK_API_KEYS
-npm run build -w server
-set -a; . server/.env; set +a; npm start -w server
-```
-
-Or with Docker (from the repo root): `docker build -f server/Dockerfile -t lk-token-importer .`,
-then run it with your env vars and a volume on `/data` so hosted tokens survive restarts.
-
-Put it behind HTTPS (Owlbear Rodeo is served over HTTPS, so browsers block
-mixed-content calls to plain HTTP).
-
-### 2. Extension
-
-```sh
-npm run build -w extension     # static files in extension/dist
-```
-
-Host `extension/dist` anywhere static (GitHub Pages, Netlify, Cloudflare Pages). In
-Owlbear Rodeo, add the extension with the URL of the hosted `manifest.json`. For
-development, `npm run dev:extension` serves on `http://localhost:5173`; add
-`http://localhost:5173/manifest.json`.
-
-### 3. Connect
-
-Open the extension from the room's toolbar. Enter the server URL and one of its access
-tokens, then pick the project. Settings are stored in that browser only.
-
-### Try it without LegendKeeper or Owlbear
-
-```sh
-npm run demo            # mock LegendKeeper + the real server on :8787
-npm run dev:extension   # then open http://localhost:5173/?mock
-```
-
-Use server `http://localhost:8787` and token `demo-access-token-not-for-production`.
-`?mock` (dev server only) swaps Owlbear for an in-browser scene. Add `&theme=light`,
-`&role=player`, `&scene=none` or `&fail=items` to see other states.
-
-## Security model
-
-- LegendKeeper API keys exist only in the server's environment. The extension holds a
-  separate, revocable **access token** for the server. It sits in the GM's
-  `localStorage` and grants only this server's narrow API.
+- LegendKeeper keys live only in the Worker's encrypted secrets, set by the deploy
+  workflow from GitHub secrets. The extension holds the separate **access password**,
+  stored in the GM's browser, and it grants only this Worker's narrow API.
 - The image proxy is **page-scoped**. The browser asks for `(project, page, imageId)`,
-  where `imageId` is a hash of a URL the server itself extracted from that page. It is
-  never an open proxy. Outbound fetches are `https:` only and size-capped, and they are
-  checked against private, loopback and link-local addresses *at connect time* (no DNS
-  rebinding). Bytes are sniffed before use. Set `LK_ASSET_HOSTS` to pin the asset
-  host(s).
-- Private page art reaches the editor as `blob:` URLs. It is never given a public URL.
-- The **finished token** is the one image that becomes public: every player's browser
-  must load it. It is published only when the GM presses *Create token*, stored under the
-  SHA-256 of its bytes (unguessable, de-duplicated), and served with
-  `Access-Control-Allow-Origin: *`. If you'd rather not host anything, switch *Token
-  image hosting* to **Owlbear storage**. Owlbear then asks where to save the token and
-  asks you to pick it.
+  where `imageId` is a hash of a URL the Worker itself extracted from that page. It is
+  never an open proxy. Every hop must be `https:`, and private-IP literals and local names
+  are refused. Bodies are size-capped and sniffed. Set `LK_ASSET_HOSTS` (a Worker variable)
+  to pin LegendKeeper's asset host.
+- Private page art reaches the editor as `blob:` URLs and never gets a public URL.
+- The **finished token** is the one image made public: every player's browser has to load
+  it. It is published only when the GM presses *Create token*, stored under the SHA-256 of
+  its bytes (unguessable, de-duplicated) and served with CORS. If you'd rather not, choose
+  **Owlbear storage** in Settings. Owlbear then saves the token to your own Owlbear storage.
 - Token metadata (`io.github.groudonmcl.lk-token-importer/link`) holds only the version,
-  project id, page id, last-known title, link time and import id. It never holds keys or
-  page content.
+  project and page ids, the last-known title, the link time and an import id.
 
-## Token links in Owlbear
+## Token links
 
 | Situation | Behaviour |
 | --- | --- |
-| First import | Token created with link metadata, selected and framed in view |
+| First import | Token created with link metadata, selected and framed |
 | Page opened again | "A token for this page already exists": *Use existing* / *Create another* / *Cancel* |
 | Token deleted | Live scene lookup finds nothing; importing is open again |
 | Token copied in Owlbear | Shown as multiple matches, each selectable |
-| Page renamed | Link holds (by id); "Name differs" with one-click rename |
+| Page renamed | The link holds (by id); "Name differs" offers a one-click rename |
 | Page deleted or hidden | "Page unavailable", with *Unlink tokens* |
-| Token in another scene | Reported from the room index; Owlbear has no API to switch scenes |
-| Link metadata corrupted | Listed in Settings → Scene links, with *Remove link data* |
-| Lookup failed (network, scene) | Explicit warning; picker stays closed until *Retry* or *Continue anyway* |
-| Create clicked twice | One token: in-flight guard plus a per-session import id checked against the scene |
-
-Right-click a linked token → **LegendKeeper page** to open it in the importer.
+| Token in another scene | Reported from a small room index; Owlbear has no API to switch scenes |
+| Link metadata corrupted | Settings → Scene links → *Remove link data* |
+| Lookup failed | Explicit warning; the picker stays closed until *Retry* or *Continue anyway* |
+| Create clicked twice | One token (in-flight guard plus a per-session import id) |
 
 ## Development
 
 ```sh
-npm test            # 156 tests: size parsing, extraction, client retries, SSRF guard,
-                    # HTTP integration against a mock LegendKeeper, link/index logic,
-                    # crop geometry and pixel-level renderer checks
+npm install
+npm test                 # 213 unit/integration tests (see below)
 npm run typecheck
-npm run build
+npm run build:cloudflare && npm run e2e   # end-to-end in the Workers runtime (needs Chromium)
 ```
 
-## Verified vs. unverified
+- `npm test` covers size parsing, page extraction, client retries, both image fetchers'
+  SSRF rules, and the full HTTP API run against **both** the Node stack and the real
+  Worker entry. It also validates the mock LegendKeeper against the **official OpenAPI
+  schemas** and checks that the client only calls endpoints the spec defines. The rest is
+  link and room-index logic, crop geometry, pixel-level renderer checks and the deploy
+  helpers.
+- `npm run e2e` runs the production bundle with the real `@owlbear-rodeo/sdk`, served by
+  `wrangler dev` (workerd), inside an **Owlbear host emulator** that speaks the SDK's
+  message protocol from another origin. 40 checks cover the GM workflow. Screenshots go
+  to `e2e/output/`.
+- UI work without Owlbear: `npm run demo` (mock LegendKeeper + API on :8787) and
+  `npm run dev:extension`, then open `http://localhost:5173/?mock`.
 
-Verified with a mock LegendKeeper built from the v3 OpenAPI spec, and by driving the real
-UI in headless Chromium through the mock Owlbear platform. **Not yet exercised against a
-live LegendKeeper project or a live Owlbear room** (that needs a paid LegendKeeper key and
-a room). The calls follow the documented API and SDK types. See the open items at the end
-of [docs/API-RESEARCH.md](docs/API-RESEARCH.md).
+See [docs/MILESTONES.md](docs/MILESTONES.md) for per-milestone status and
+[docs/API-RESEARCH.md](docs/API-RESEARCH.md) for the verified API facts behind the design.

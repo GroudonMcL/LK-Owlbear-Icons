@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Owlbear host emulator</title>
+    <style>
+      body { margin: 0; font: 12px system-ui, sans-serif; background: #1e2130; color: #ddd; }
+      #map { position: absolute; inset: 0; }
+      #popover { position: absolute; top: 56px; left: 12px; width: 400px; height: 620px; border: 0; border-radius: 12px; background: #2a2c38; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+      .modal { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); border: 0; border-radius: 12px; background: #2a2c38; box-shadow: 0 20px 60px rgba(0,0,0,.6); z-index: 10; }
+      #background { display: none; }
+      #toasts { position: absolute; right: 12px; top: 56px; pointer-events: none; display: flex; flex-direction: column; gap: 6px; max-width: 360px; z-index: 20; }
+      #toasts div { background: #333849; padding: 8px 10px; border-radius: 8px; border-left: 3px solid #888; }
+      #toasts .SUCCESS { border-color: #74c69a; } #toasts .ERROR { border-color: #ef7362; } #toasts .INFO { border-color: #86b9f5; }
+      #bar { position: absolute; top: 12px; left: 12px; right: 12px; height: 32px; display: flex; gap: 8px; align-items: center; }
+      #bar span { background: #2a2c38; padding: 6px 10px; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="map"></canvas>
+    <div id="bar"><span>Owlbear host emulator</span><span id="tool">tool: move</span></div>
+    <div id="toasts"></div>
+    <script src="host.js"></script>
+  </body>
+</html>

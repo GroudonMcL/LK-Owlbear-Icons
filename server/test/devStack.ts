@@ -6,11 +6,13 @@
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { createApp } from "../src/app.js";
-import { loadConfig } from "../src/config.js";
-import { LkClient } from "../src/lk/client.js";
-import { PageService, ProjectRegistry } from "../src/services.js";
-import { TokenStore } from "../src/tokenStore.js";
+import { loadConfig } from "../src/core/config.js";
+import { createHandler } from "../src/core/handler.js";
+import { LkClient } from "../src/core/lk/client.js";
+import { PageService, ProjectRegistry } from "../src/core/services.js";
+import { toNodeListener } from "../src/node/adapter.js";
+import { FileTokenStore } from "../src/node/fileTokenStore.js";
+import { safeFetch } from "../src/node/safeFetch.js";
 import { API_KEY, startMockLk } from "./mockLk.js";
 
 const ACCESS_TOKEN = "demo-access-token-not-for-production";
@@ -30,10 +32,11 @@ const pages = new PageService(registry, {
   maxSourceImageBytes: config.maxSourceImageBytes,
   assetHostAllowlist: null,
   allowInsecureAssetFetch: true,
+  fetchImage: safeFetch,
 });
-const tokens = new TokenStore(config.tokenStoreDir!, config.tokenStoreMaxBytes);
+const tokens = new FileTokenStore(config.tokenStoreDir, config.tokenStoreMaxBytes);
 await tokens.init();
-http.createServer(createApp({ config, registry, pages, tokens })).listen(port, () => {
+http.createServer(toNodeListener(createHandler({ config, registry, pages, tokens }))).listen(port, () => {
   console.log(`Demo backend on http://localhost:${port} (mock LegendKeeper at ${lk.baseUrl})`);
   console.log(`Access token: ${ACCESS_TOKEN}`);
 });

@@ -197,7 +197,7 @@ export function buildFixtures(assetBase: string) {
   return { resources, blocks };
 }
 
-export async function startMockLk(): Promise<MockLk> {
+export async function startMockLk(listenPort = 0): Promise<MockLk> {
   const requests: string[] = [];
   const failures: { prefix: string; status: number; code: string; times: number; headers: Record<string, string> }[] = [];
   const pngs: Record<string, Buffer> = {
@@ -283,7 +283,7 @@ export async function startMockLk(): Promise<MockLk> {
     json(404, { message: "Not found", code: "NOT_FOUND", requestId: "r" });
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(listenPort, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${port}`;
   assetBase = baseUrl;

@@ -26,7 +26,9 @@ API key and is handled defensively.
 | Unslashed paths answer `308` to the trailing-slash form (e.g. `/api/v3/projects` → `/api/v3/projects/`). | Live probe |
 | Rate limits per key: 300 req/min, 6,000/h, 60,000/day; 12,000/h per project. `429` carries `Retry-After`. | OpenAPI description |
 
-**Consequence:** a backend is mandatory, for CORS as well as for key secrecy.
+**Consequence:** a server-side component is mandatory, for CORS as well as for key
+secrecy. It is deployed as a Cloudflare Worker that also hosts the extension, so nothing
+runs on the GM's computer.
 "Selecting a project" means choosing among the projects whose keys the backend
 holds. One key covers exactly one project, so the backend accepts several keys.
 
@@ -114,11 +116,12 @@ Tags are on every resource (`tags[]`). `GET /projects/{id}/tags` lists them with
 
 1. **Token image hosting.** No Owlbear API takes a generated image and returns a URL
    without user interaction. Two supported modes are implemented:
-   - **Backend hosting (default, direct).** The final PNG is posted to the backend. It is
-     stored under its SHA-256 (de-duplicated, immutable) and served with
-     `Access-Control-Allow-Origin: *`. This is the only image the extension ever makes
-     publicly reachable, and only when the GM presses *Create token*. Every player's
-     browser must be able to load a token anyway. The URL is unguessable (content hash).
+   - **Worker hosting (default, direct).** The final PNG is posted to the Worker. It is
+     stored in Workers KV under its SHA-256 (de-duplicated, immutable) and served with
+     `Access-Control-Allow-Origin: *` from the edge cache. This is the only image the
+     extension ever makes publicly reachable, and only when the GM presses *Create token*.
+     Every player's browser must be able to load a token anyway. The URL is unguessable
+     (content hash).
    - **Owlbear storage.** The token goes to the GM's Owlbear library via `uploadImages`
      (folder picker). `downloadImages` (image picker, pre-filtered by name) then returns
      the Owlbear-hosted URL, and the item is built from it with link metadata attached.
@@ -140,11 +143,24 @@ Tags are on every resource (`tags[]`). `GET /projects/{id}/tags` lists them with
 4. **Players.** Import UI and context menus are GM-only (`roles: ["GM"]` and
    `OBR.player.getRole()`).
 
+## Facts established while testing (2026-10-16)
+
+| Fact | How it was established |
+| --- | --- |
+| Every LegendKeeper v3 route is canonical with a trailing slash; the unslashed form answers `308` to it (query preserved). The client requests the slashed form directly. | Live probes of `/search`, `/resources/{id}`, `/docs/{id}/blocks` |
+| The SDK locates its host from an `obrref` query parameter, `base64("<origin> <roomId>")`, which Owlbear appends to every extension frame URL. It accepts messages only from that origin. `OBR.isAvailable` is `Boolean(origin)`. | `@owlbear-rodeo/sdk/lib/common/getDetails.js`, `messages/MessageBus.js` |
+| The SDK makes relative icon and modal URLs absolute against `window.location.origin` (not the manifest's directory), so the extension passes absolute URLs. | `lib/common/normalize.js` |
+| `updateItems` sends whole top-level fields computed from Immer patches; deleting one metadata key sends the full new `metadata` object. | `lib/api/scene/SceneItemsApi.js` |
+| In Cloudflare Workers, calling the global `fetch` as a method (`this.fetch(...)`) throws "Illegal invocation"; Node does not. | Reproduced in `workerd`; regression test in `client.test.ts` |
+| Workers Static Assets redirects `/x.html` to `/x` by default (`html_handling: auto-trailing-slash`), and adds no CORS headers. Both are configured (`html_handling: none`, `_headers`) so Owlbear can fetch the manifest and open the exact page URLs. | `wrangler dev` |
+| Owlbear install: profile → **Add Extension** with the manifest URL, then enable it for a room. | docs: tutorial "Install your extension" |
+
 ## Remaining unverified items (need a real key)
 
 - LegendKeeper asset host name, and whether asset URLs need cookies or tokens or send CORS
   headers. Handled by the proxy either way. Set `LK_ASSET_HOSTS` once known.
-- Whether `/search` and nested routes also 308-redirect. The backend follows same-origin
-  redirects and keeps the `Authorization` header on them, so it works either way.
+- Whether LegendKeeper's edge (itself behind Cloudflare) treats requests from Cloudflare
+  Workers differently from other server-side clients. Plain server requests are answered
+  normally (verified with curl).
 - `Resource.imageUrl` semantics (it is undocumented beyond its type). Included as a
   candidate image labelled "Page image".

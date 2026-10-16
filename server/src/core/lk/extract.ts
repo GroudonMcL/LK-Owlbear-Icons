@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   detectSize,
   type DetectedSize,
@@ -6,6 +5,7 @@ import {
   type PageImage,
   type TextLineCandidate,
 } from "@lkti/shared";
+import { sha256Hex } from "../tokenStore.js";
 import type { LkDocument, LkNode, LkResource } from "./types.js";
 
 export interface ExtractedImage extends PageImage {
@@ -28,8 +28,8 @@ export interface ExtractResult {
 
 const MAX_DEPTH = 64;
 
-export function imageIdFor(url: string): string {
-  return createHash("sha256").update(url).digest("hex").slice(0, 24);
+export async function imageIdFor(url: string): Promise<string> {
+  return (await sha256Hex(url)).slice(0, 24);
 }
 
 /** Text of a run array: plain text, mention labels, and line breaks as "\n". */
@@ -80,7 +80,7 @@ class Collector {
   addImage(url: unknown, image: Omit<ExtractedImage, "id" | "url">): void {
     if (!isUsableImageUrl(url) || this.seenUrls.has(url)) return;
     this.seenUrls.add(url);
-    this.images.push({ ...image, id: imageIdFor(url), url });
+    this.images.push({ ...image, id: "", url });
   }
 
   addLines(text: string, origin: string): void {
@@ -173,7 +173,7 @@ function walk(node: unknown, ctx: WalkContext, depth: number): void {
  * the creature size. Images come in the order a reader meets them: sidebar
  * images, then document images, then the page image and banner.
  */
-export function extractPage(input: ExtractInput): ExtractResult {
+export async function extractPage(input: ExtractInput): Promise<ExtractResult> {
   const collector = new Collector();
   const imageCounter = { n: 0 };
 
@@ -194,6 +194,7 @@ export function extractPage(input: ExtractInput): ExtractResult {
     collector.addImage(input.resource.banner.url, { source: "banner", label: "Banner" });
   }
 
+  for (const image of collector.images) image.id = await imageIdFor(image.url);
   return {
     images: collector.images,
     keyValues: collector.keyValues,

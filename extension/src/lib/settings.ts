@@ -29,17 +29,28 @@ export const DEFAULT_SETTINGS: Settings = {
   gargantuanCells: 4,
 };
 
+/**
+ * True in the Cloudflare build, where one Worker serves both the extension and
+ * its API: the backend is simply this page's own origin.
+ */
+export const SAME_ORIGIN_BACKEND = import.meta.env.VITE_SAME_ORIGIN_BACKEND === "1";
+
+function withDefaults(s: Settings): Settings {
+  if (!s.backendUrl && SAME_ORIGIN_BACKEND) return { ...s, backendUrl: window.location.origin };
+  return s;
+}
+
 const KEY = "lkti.settings.v1";
 const EVENT = "lkti-settings";
 
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return { ...DEFAULT_SETTINGS };
+    if (!raw) return withDefaults({ ...DEFAULT_SETTINGS });
     const parsed = JSON.parse(raw) as Partial<Settings>;
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    return withDefaults({ ...DEFAULT_SETTINGS, ...parsed });
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return withDefaults({ ...DEFAULT_SETTINGS });
   }
 }
 

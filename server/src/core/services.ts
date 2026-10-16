@@ -5,7 +5,7 @@ import { sniffImageMime, type RasterMime } from "./imageSniff.js";
 import { LkApiError, LkClient, LkNetworkError } from "./lk/client.js";
 import { extractPage, type ExtractedImage } from "./lk/extract.js";
 import type { LkDocumentBlocks, LkList, LkNode, LkProject, LkResource, LkSearchResult } from "./lk/types.js";
-import { safeFetch, SafeFetchError } from "./safeFetch.js";
+import { SafeFetchError, type ImageFetcher } from "./imageFetch.js";
 
 /** Translates a LegendKeeper failure into a response the extension can act on. */
 export function mapUpstreamError(err: unknown, notFound: HttpError): HttpError {
@@ -141,7 +141,7 @@ interface CachedPage {
 }
 
 export interface FetchedImage {
-  body: Buffer;
+  body: Uint8Array;
   mime: RasterMime;
 }
 
@@ -151,7 +151,7 @@ export interface PageServiceOptions {
   maxSourceImageBytes: number;
   assetHostAllowlist: string[] | null;
   allowInsecureAssetFetch: boolean;
-  fetchImage?: typeof safeFetch;
+  fetchImage: ImageFetcher;
 }
 
 const MAX_PAGE_DOCUMENTS = 8;
@@ -162,7 +162,7 @@ export class PageService {
   private readonly images: TtlCache<string, FetchedImage>;
   private readonly pageFlight = new InFlight<string, CachedPage>();
   private readonly imageFlight = new InFlight<string, FetchedImage>();
-  private readonly fetchImage: typeof safeFetch;
+  private readonly fetchImage: ImageFetcher;
 
   constructor(
     private readonly registry: ProjectRegistry,
@@ -176,7 +176,7 @@ export class PageService {
       maxWeight: 128 * 1024 * 1024,
       weigh: (img) => img.body.length,
     });
-    this.fetchImage = options.fetchImage ?? safeFetch;
+    this.fetchImage = options.fetchImage;
   }
 
   async search(projectId: string, query: string, limit: number): Promise<SearchResponse> {
@@ -232,7 +232,7 @@ export class PageService {
       }),
     );
 
-    const extracted = extractPage({ resource, documents });
+    const extracted = await extractPage({ resource, documents });
     const details: PageDetails = {
       projectId,
       id: resource.id,

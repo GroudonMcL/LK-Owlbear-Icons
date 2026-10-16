@@ -4,12 +4,15 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createApp } from "../src/app.js";
-import { loadConfig } from "../src/config.js";
-import { LkClient } from "../src/lk/client.js";
-import { imageIdFor } from "../src/lk/extract.js";
-import { PageService, ProjectRegistry } from "../src/services.js";
-import { TokenStore } from "../src/tokenStore.js";
+import { loadConfig } from "../src/core/config.js";
+import { createHandler, VERSION } from "../src/core/handler.js";
+import { LkClient } from "../src/core/lk/client.js";
+import { imageIdFor } from "../src/core/lk/extract.js";
+import { PageService, ProjectRegistry } from "../src/core/services.js";
+import { toNodeListener } from "../src/node/adapter.js";
+import { FileTokenStore } from "../src/node/fileTokenStore.js";
+import { safeFetch } from "../src/node/safeFetch.js";
+import worker, { type KvLike } from "../src/worker.js";
 import { API_KEY, makePng, PROJECT_ID, startMockLk, type MockLk } from "./mockLk.js";
 
 const ACCESS = "test-access-token-0123456789abcdef";
@@ -19,8 +22,31 @@ let base = "";
 let tokenDir = "";
 let rateLimit = 1000;
 
-async function start(options: { hosting?: boolean } = {}) {
-  const config = loadConfig({
+/** In-memory stand-in for a Workers KV namespace. */
+export function fakeKv(): KvLike & { size: () => number } {
+  const store = new Map<string, { value: Uint8Array; metadata: unknown }>();
+  return {
+    async getWithMetadata(key: string) {
+      const hit = store.get(key);
+      return hit
+        ? { value: new Response(hit.value).body as ReadableStream<Uint8Array>, metadata: hit.metadata as never }
+        : { value: null, metadata: null };
+    },
+    async put(key: string, value: ArrayBuffer | Uint8Array, options?: { metadata?: unknown }) {
+      store.set(key, { value: new Uint8Array(value), metadata: options?.metadata });
+    },
+    async delete(key: string) {
+      store.delete(key);
+    },
+    size: () => store.size,
+  };
+}
+
+const RUNTIMES = ["node", "worker"] as const;
+type Runtime = (typeof RUNTIMES)[number];
+
+function envFor(options: { hosting?: boolean }) {
+  return {
     LKTI_ACCESS_TOKENS: ACCESS,
     LK_API_KEYS: API_KEY,
     LK_BASE_URL: lk.baseUrl,
@@ -30,19 +56,39 @@ async function start(options: { hosting?: boolean } = {}) {
     LKTI_ALLOWED_ORIGINS: "https://ext.example",
     LKTI_INSECURE_ASSET_FETCH: "1",
     LKTI_RATE_LIMIT_PER_MINUTE: String(rateLimit),
-  });
-  const registry = new ProjectRegistry([new LkClient({ baseUrl: lk.baseUrl, apiKey: API_KEY, sleep: async () => {} })]);
-  const pages = new PageService(registry, {
-    maxSourceImageBytes: config.maxSourceImageBytes,
-    assetHostAllowlist: null,
-    allowInsecureAssetFetch: true,
-  });
-  let tokens: TokenStore | null = null;
-  if (config.tokenStoreDir) {
-    tokens = new TokenStore(config.tokenStoreDir, config.tokenStoreMaxBytes);
-    await tokens.init();
+  };
+}
+
+let runtime: Runtime = "node";
+
+async function start(options: { hosting?: boolean } = {}) {
+  let handle: (request: Request) => Promise<Response>;
+  if (runtime === "node") {
+    const config = loadConfig(envFor(options));
+    const registry = new ProjectRegistry([new LkClient({ baseUrl: lk.baseUrl, apiKey: API_KEY, sleep: async () => {} })]);
+    const pages = new PageService(registry, {
+      maxSourceImageBytes: config.maxSourceImageBytes,
+      assetHostAllowlist: null,
+      allowInsecureAssetFetch: true,
+      fetchImage: safeFetch,
+    });
+    let tokens: FileTokenStore | null = null;
+    if (config.tokenHosting) {
+      tokens = new FileTokenStore(config.tokenStoreDir, config.tokenStoreMaxBytes);
+      await tokens.init();
+    }
+    handle = createHandler({ config, registry, pages, tokens, log: () => {} });
+  } else {
+    // The real Worker entry, with a fake KV namespace and static-asset binding.
+    const env = {
+      ...envFor(options),
+      TOKENS: fakeKv(),
+      ASSETS: { fetch: async () => new Response("<!doctype html>static", { headers: { "Content-Type": "text/html" } }) },
+    };
+    const ctx = { waitUntil: () => undefined };
+    handle = (request) => worker.fetch(request, env, ctx);
   }
-  server = http.createServer(createApp({ config, registry, pages, tokens, log: () => {} }));
+  server = http.createServer(toNodeListener(handle));
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
@@ -58,7 +104,9 @@ function api(pathname: string, init: RequestInit = {}) {
   });
 }
 
+describe.each(RUNTIMES)("%s runtime", (which) => {
 beforeAll(async () => {
+  runtime = which;
   lk = await startMockLk();
   tokenDir = await mkdtemp(path.join(os.tmpdir(), "lkti-tokens-"));
   await start();
@@ -77,7 +125,7 @@ beforeEach(() => {
 describe("auth and CORS", () => {
   it("serves health without auth", async () => {
     const res = await fetch(`${base}/api/health`);
-    expect(await res.json()).toEqual({ ok: true, version: "0.1.0", tokenHosting: true });
+    expect(await res.json()).toEqual({ ok: true, version: VERSION, tokenHosting: true });
   });
 
   it("rejects missing and wrong access tokens", async () => {
@@ -196,7 +244,7 @@ describe("image proxy", () => {
   });
 
   it("refuses image ids that are not on the page, even if they exist elsewhere", async () => {
-    const goblinImage = imageIdFor(`${lk.assetBase}/assets/goblin-portrait.png`);
+    const goblinImage = await imageIdFor(`${lk.assetBase}/assets/goblin-portrait.png`);
     const res = await api(`/api/projects/${PROJECT_ID}/pages/dragon/images/${goblinImage}`);
     expect(res.status).toBe(404);
     expect((await res.json()).error.code).toBe("IMAGE_NOT_FOUND");
@@ -232,7 +280,7 @@ describe("token hosting", () => {
     const del = await api(`/api/tokens/${stored.hash}`, { method: "DELETE" });
     expect(del.status).toBe(204);
     expect((await fetch(`${base}/t/${stored.hash}.png`)).status).toBe(404);
-    expect((await readdir(tokenDir)).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    if (runtime === "node") expect((await readdir(tokenDir)).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
   it("rejects non-images, oversized images and anonymous uploads", async () => {
@@ -284,4 +332,14 @@ describe("rate limiting", () => {
     rateLimit = 1000;
     await start();
   });
+});
+
+if (which === "worker") {
+  describe("worker routing", () => {
+    it("serves the extension's static files for non-API paths", async () => {
+      const res = await fetch(`${base}/manifest.json`);
+      expect(await res.text()).toContain("static");
+    });
+  });
+}
 });

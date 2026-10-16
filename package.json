@@ -14,15 +14,21 @@
     "build": "npm run build -w server && npm run build -w extension",
     "dev:server": "npm run dev -w server",
     "dev:extension": "npm run dev -w extension",
-    "demo": "tsx server/test/devStack.ts"
+    "demo": "tsx server/test/devStack.ts",
+    "build:cloudflare": "VITE_SAME_ORIGIN_BACKEND=1 npm run build -w extension",
+    "dev:worker": "wrangler dev",
+    "e2e": "node e2e/run.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "ajv": "^8.17.1",
+    "playwright-core": "^1.48.2",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "wrangler": "^4.147.0"
   }
 }

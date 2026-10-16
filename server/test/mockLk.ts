@@ -20,6 +20,64 @@ export function makePng(width: number, height: number, color = "#b0413e"): Buffe
   return canvas.toBuffer("image/png");
 }
 
+/** Procedural portrait-style art: sky gradient, a hooded figure, optional plain background. */
+export function makeArt(width: number, height: number, hue: number, plainBackground = false): Buffer {
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  if (plainBackground) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+  } else {
+    const sky = ctx.createLinearGradient(0, 0, 0, height);
+    sky.addColorStop(0, `hsl(${hue}, 45%, 22%)`);
+    sky.addColorStop(0.6, `hsl(${(hue + 30) % 360}, 50%, 38%)`);
+    sky.addColorStop(1, `hsl(${(hue + 50) % 360}, 55%, 52%)`);
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, width, height);
+    for (let i = 0; i < 40; i++) {
+      ctx.fillStyle = `rgba(255, 255, 230, ${0.2 + ((i * 37) % 10) / 20})`;
+      ctx.beginPath();
+      ctx.arc(((i * 97) % 100) / 100 * width, ((i * 53) % 45) / 100 * height, 1 + (i % 3), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  const u = Math.min(width, height);
+  const cx = width / 2;
+  const cy = height * 0.42;
+  // Cloak and shoulders.
+  ctx.fillStyle = `hsl(${(hue + 180) % 360}, 30%, 18%)`;
+  ctx.beginPath();
+  ctx.moveTo(cx - u * 0.42, height);
+  ctx.quadraticCurveTo(cx - u * 0.38, cy + u * 0.18, cx, cy - u * 0.28);
+  ctx.quadraticCurveTo(cx + u * 0.38, cy + u * 0.18, cx + u * 0.42, height);
+  ctx.closePath();
+  ctx.fill();
+  // Face in the hood.
+  ctx.fillStyle = `hsl(${(hue + 20) % 360}, 35%, 62%)`;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, u * 0.12, u * 0.15, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Glowing eyes.
+  ctx.fillStyle = `hsl(${(hue + 160) % 360}, 90%, 70%)`;
+  for (const dx of [-0.045, 0.045]) {
+    ctx.beginPath();
+    ctx.ellipse(cx + dx * u, cy - u * 0.02, u * 0.022, u * 0.012, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Staff.
+  ctx.strokeStyle = `hsl(${(hue + 40) % 360}, 40%, 40%)`;
+  ctx.lineWidth = u * 0.025;
+  ctx.beginPath();
+  ctx.moveTo(cx + u * 0.3, height);
+  ctx.lineTo(cx + u * 0.34, cy - u * 0.3);
+  ctx.stroke();
+  ctx.fillStyle = `hsl(${(hue + 160) % 360}, 90%, 65%)`;
+  ctx.beginPath();
+  ctx.arc(cx + u * 0.34, cy - u * 0.33, u * 0.04, 0, Math.PI * 2);
+  ctx.fill();
+  return canvas.toBuffer("image/png");
+}
+
 export interface MockLk {
   baseUrl: string;
   assetBase: string;
@@ -143,14 +201,14 @@ export async function startMockLk(): Promise<MockLk> {
   const requests: string[] = [];
   const failures: { prefix: string; status: number; code: string; times: number; headers: Record<string, string> }[] = [];
   const pngs: Record<string, Buffer> = {
-    "goblin-icon.png": makePng(64, 64, "#3a6b35"),
-    "goblin-banner.png": makePng(400, 100, "#24324a"),
-    "goblin-portrait.png": makePng(300, 400, "#7a3b2e"),
-    "goblin-infobox.png": makePng(256, 256, "#555"),
-    "goblin-action.png": makePng(500, 300, "#4b3f72"),
+    "goblin-icon.png": makeArt(64, 64, 110),
+    "goblin-banner.png": makeArt(800, 200, 220),
+    "goblin-portrait.png": makeArt(600, 800, 20),
+    "goblin-infobox.png": makeArt(512, 512, 280),
+    "goblin-action.png": makeArt(900, 600, 0, true),
   };
   // A JPEG would need an encoder; serve PNG bytes under a .jpg name to prove sniffing ignores names.
-  pngs["dragon.jpg"] = makePng(600, 450, "#8f1d14");
+  pngs["dragon.jpg"] = makeArt(1200, 900, 350);
 
   let assetBase = "";
   let fixtures: ReturnType<typeof buildFixtures>;

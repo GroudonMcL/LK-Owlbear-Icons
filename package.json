@@ -13,7 +13,8 @@
     "typecheck": "npm run typecheck -w server && npm run typecheck -w extension",
     "build": "npm run build -w server && npm run build -w extension",
     "dev:server": "npm run dev -w server",
-    "dev:extension": "npm run dev -w extension"
+    "dev:extension": "npm run dev -w extension",
+    "demo": "tsx server/test/devStack.ts"
   },
   "engines": {
     "node": ">=20"

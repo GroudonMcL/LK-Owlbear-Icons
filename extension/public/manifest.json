@@ -1,0 +1,17 @@
+{
+  "name": "LegendKeeper Token Importer",
+  "version": "0.1.0",
+  "manifest_version": 1,
+  "description": "Turn LegendKeeper page art into framed, linked tokens: search, crop, frame and place in seconds.",
+  "author": "GroudonMcL",
+  "icon": "icon.svg",
+  "homepage_url": "https://github.com/GroudonMcL/LK-Owlbear-Icons",
+  "background_url": "background.html",
+  "action": {
+    "title": "LegendKeeper Token Importer",
+    "icon": "icon.svg",
+    "popover": "index.html",
+    "width": 400,
+    "height": 620
+  }
+}
